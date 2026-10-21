@@ -515,6 +515,7 @@
     "cli-native-profile.test.ts": "cli",
     "cli-observe-logs.test.ts": "cli",
     "cli-provider.test.ts": "cli",
+    "cli-provider-list-active.test.ts": "cli",
     "cli-ready-subprocess.test.ts": "cli",
     "cli-ready.test.ts": "cli",
     "cli-registry.test.ts": "cli",
