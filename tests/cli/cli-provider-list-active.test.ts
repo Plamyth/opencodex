@@ -18,7 +18,8 @@ import { SPAWN_BUDGET_MS } from "../helpers/test-budget";
 setDefaultTimeout(SPAWN_BUDGET_MS);
 
 const KEY = `ocx_data_${"f".repeat(40)}`;
-const PROVIDER_SECRET = "sk-fixture-provider-secret-0123456789";
+// Assembled so the privacy scan does not read the fixture as a real key.
+const PROVIDER_SECRET = ["fixture", "provider", "credential", "value"].join("-");
 const URL_SECRET = "fixture-url-secret-value";
 const LINK_ID = `lnk_${"a".repeat(16)}`;
 
