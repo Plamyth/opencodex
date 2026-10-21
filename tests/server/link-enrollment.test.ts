@@ -367,6 +367,28 @@ describe("server-owned confirmation and authority", () => {
     expect(h.state.confirmedHosts?.size).toBe(0); noEnrollmentEffects(h);
   });
 
+  test.each([
+    ["cmd.exe", "'true' is not recognized as an internal or external command,\r\noperable program or batch file.\r\n"],
+    ["PowerShell", "true : The term 'true' is not recognized as the name of a cmdlet, function, script file, or operable program.\r\n"],
+  ])("a Windows %s shell is refused at the probe, naming Hub mode, before trust or a key", async (_shell, stderr) => {
+    const h = harness(); h.overrides.probe = () => ({ code: 1, stdout: "", stderr });
+    const response = await h.call("probe", { alias: "child", includeVersion: true });
+    expect(response.status).toBe(409);
+    const body = await response.json() as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("remote_platform_unsupported");
+    expect(body.error.message).toContain("ocx hub invite");
+    expect(body.error.message).toContain("ocx connect");
+    expect(h.calls.map(call => call.step)).toEqual(["probe"]);
+    expect(h.state.pendingHosts.size).toBe(0); expect(existsSync(h.knownHosts)).toBe(false); noEnrollmentEffects(h);
+  });
+
+  test("a PowerShell refusal of sh at host confirmation is Windows, not a version failure", async () => {
+    const h = harness(); h.seed();
+    h.overrides.version = () => ({ code: 1, stdout: "", stderr: "sh : The term 'sh' is not recognized as the name of a cmdlet, function, script file, or operable program." });
+    await denied(await h.call("confirm-host", { alias: "child", fingerprint }), "remote_platform_unsupported", 409);
+    expect(existsSync(h.knownHosts)).toBe(false); expect(h.state.confirmedHosts?.size).toBe(0); noEnrollmentEffects(h);
+  });
+
   test("fingerprint mismatch refuses both confirmation and apply without SSH", async () => {
     const h = harness(); h.seed();
     await denied(await h.call("confirm-host", { alias: "child", fingerprint: "SHA256:other" }), "host_fingerprint_mismatch", 409);

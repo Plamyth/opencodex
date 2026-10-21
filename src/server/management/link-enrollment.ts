@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSshAlias, buildExecArgv, buildFingerprintArgv, buildProbeArgv, REMOTE_COMMAND_NOT_FOUND, REMOTE_PLATFORM_UNSUPPORTED, remoteOcxArgv } from "../../link/ssh-argv";
 import { parseFingerprintLine } from "../../link/fingerprint";
+import { isWindowsShellRefusal, WINDOWS_CHILD_REFUSAL } from "../../link/remote-platform";
 import { LINK_CATALOG_MAX_BYTES, LINK_RELAY_VERIFY_MS, isChildHealth, linkCommandBudget, linkRestartBudget, parseChildHttp, remoteChildHttpArgv, REMOTE_CURL_PREFLIGHT } from "../../link/remote-probe";
 import { newLinkId, type LinkStore } from "../../link/store";
 import { SshRunnerError, boundHint, sshFailureHint, sshRunnerErrorHint, type SshRunResult } from "../../link/ssh-runner";
@@ -24,9 +25,13 @@ async function serialized(state: LinkRouteState, alias: string, action: () => Pr
 }
 
 function remoteFailure(result: SshRunResult, code: string, message: string): Response | null {
-  if (result.code === REMOTE_PLATFORM_UNSUPPORTED) return fail("remote_platform_unsupported", "Remote Link Children require macOS or Linux; Windows is unsupported.", 409);
+  if (result.code === REMOTE_PLATFORM_UNSUPPORTED || (result.code !== 0 && isWindowsShellRefusal(result.stderr))) return windowsRefusal();
   if (result.code === REMOTE_COMMAND_NOT_FOUND) return fail("remote_ocx_missing", "ocx was not found on the remote host.", 502, sshFailureHint(result.stderr));
   return result.code === 0 ? null : fail(code, message, 502, sshFailureHint(result.stderr));
+}
+
+function windowsRefusal(): Response {
+  return fail("remote_platform_unsupported", WINDOWS_CHILD_REFUSAL, 409);
 }
 
 export async function probe(ctx: ManagementContext, state: LinkRouteState): Promise<Response> {
@@ -44,7 +49,8 @@ export async function probe(ctx: ManagementContext, state: LinkRouteState): Prom
       const started = now();
       const result = await runner.run(buildProbeArgv({ alias, tempKnownHostsFile: path }), { timeoutMs: 30_000 });
       const latency = Math.max(0, now() - started);
-      if (result.code !== 0) return fail("probe_failed", "SSH host probing failed.", 502, sshFailureHint(result.stderr));
+      // cmd.exe and PowerShell refuse the POSIX `true` the probe runs; say Windows, not "probe failed".
+      if (result.code !== 0) return isWindowsShellRefusal(result.stderr) ? windowsRefusal() : fail("probe_failed", "SSH host probing failed.", 502, sshFailureHint(result.stderr));
       const fp = await runner.run(buildFingerprintArgv(path), { timeoutMs: 10_000 });
       if (fp.code !== 0) return fail("fingerprint_failed", "The SSH host fingerprint could not be read.", 502, sshFailureHint(fp.stderr));
       const parsed = parseFingerprintLine(fp.stdout.trim());
