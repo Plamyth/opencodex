@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { runLinkCommand, type LinkCliDeps } from "../../src/cli/link";
 import { linkKnownHostsPath, linkStorePath } from "../../src/link/paths";
 import { classifyRemotePlatform } from "../../src/link/remote-platform";
-import { REMOTE_PLATFORM_UNSUPPORTED } from "../../src/link/ssh-argv";
+import { REMOTE_PLATFORM_UNSUPPORTED, WINDOWS_OS_PROBE } from "../../src/link/ssh-argv";
 import type { SshRunner, SshRunResult } from "../../src/link/ssh-runner";
 import { writeLinkStore, type LinkStore } from "../../src/link/store";
 import { removeTreeWithRetry } from "../helpers/remove-tree";
@@ -15,7 +15,7 @@ const POWERSHELL_REFUSAL = "sh : The term 'sh' is not recognized as the name of 
 const ok = (stdout: string): SshRunResult => ({ code: 0, stdout, stderr: "" });
 const failed = (code: number, stderr: string): SshRunResult => ({ code, stdout: "", stderr });
 
-const ids = { mingw: "lnk_000000000000000a", cmd: "lnk_000000000000000b", ps: "lnk_000000000000000c", linux: "lnk_000000000000000d", down: "lnk_000000000000000e", joined: "lnk_000000000000000f" } as const;
+const ids = { localized: "lnk_0000000000000010", mingw: "lnk_000000000000000a", cmd: "lnk_000000000000000b", ps: "lnk_000000000000000c", linux: "lnk_000000000000000d", down: "lnk_000000000000000e", joined: "lnk_000000000000000f" } as const;
 const store: LinkStore = {
   version: 1,
   listenerPort: 56603,
@@ -25,6 +25,7 @@ const store: LinkStore = {
     { id: ids.ps, alias: "win-ps", direction: "hub-initiated", hostKeyFingerprint: "SHA256:cccccccccccccccc", tunnelPort: 52891, apiKeyId: "key-ps", createdAt: "2026-10-11T13:35:02.871Z" },
     { id: ids.linux, alias: "studio", direction: "hub-initiated", hostKeyFingerprint: "SHA256:dddddddddddddddd", tunnelPort: 52892, apiKeyId: "key-linux", createdAt: "2026-10-11T13:35:02.871Z" },
     { id: ids.down, alias: "offline", direction: "hub-initiated", hostKeyFingerprint: "SHA256:eeeeeeeeeeeeeeee", tunnelPort: 52893, apiKeyId: "key-down", createdAt: "2026-10-11T13:35:02.871Z" },
+    { id: ids.localized, alias: "win-de", direction: "hub-initiated", hostKeyFingerprint: "SHA256:ffffffffffffffff", tunnelPort: 52895, apiKeyId: "key-de", createdAt: "2026-10-11T13:35:02.871Z" },
     { id: ids.joined, alias: "laptop", direction: "client-initiated", hostKeyFingerprint: null, tunnelPort: 52894, apiKeyId: "key-joined", createdAt: "2026-10-11T13:35:02.871Z" },
   ],
 };
@@ -33,6 +34,7 @@ const answers: Record<string, SshRunResult> = {
   "win-cmd": failed(1, CMD_REFUSAL),
   "win-ps": failed(1, POWERSHELL_REFUSAL),
   studio: ok("Linux\n"),
+  "win-de": failed(1, "Die Benennung \"sh\" wurde nicht als Name eines Cmdlet erkannt.\r\n"),
   offline: failed(255, "ssh: connect to host offline port 22: Connection refused\n"),
 };
 
@@ -59,6 +61,8 @@ function harness() {
     async run(argv) {
       calls.push(argv);
       const alias = argv[argv.indexOf("--") + 1]!;
+      // The locale-independent follow-up: only the localized Windows host answers Windows_NT.
+      if (argv.at(-1) === WINDOWS_OS_PROBE) return alias === "win-de" ? ok("Windows_NT\r\n") : failed(127, "cmd: not found");
       const answer = answers[alias];
       if (!answer) throw new Error(`unexpected ssh to ${alias}`);
       return answer;
@@ -82,6 +86,7 @@ describe("classifyRemotePlatform", () => {
     ["ocx prelude status", failed(REMOTE_PLATFORM_UNSUPPORTED, ""), "windows"],
     ["cmd.exe refusal", failed(1, CMD_REFUSAL), "windows"],
     ["PowerShell refusal", failed(1, POWERSHELL_REFUSAL), "windows"],
+    ["PowerShell 7 refusal", failed(1, "sh: The term 'sh' is not recognized as a name of a cmdlet, function, script file, or executable program."), "windows"],
     ["Linux", ok("Linux\n"), "posix"],
     ["macOS", ok("Darwin\n"), "posix"],
     ["ssh transport failure", failed(255, "Connection refused"), "unknown"],
@@ -100,7 +105,7 @@ describe("ocx link cleanup", () => {
       expect(report.changed).toBe(false);
       expect(report.links.map((entry: { linkId: string; platform: string }) => [entry.linkId, entry.platform])).toEqual([
         [ids.mingw, "windows"], [ids.cmd, "windows"], [ids.ps, "windows"],
-        [ids.linux, "posix"], [ids.down, "unknown"], [ids.joined, "not_checked"],
+        [ids.linux, "posix"], [ids.down, "unknown"], [ids.localized, "windows"], [ids.joined, "not_checked"],
       ]);
       const mini = report.links[0];
       expect(mini.recovery).toEqual([
@@ -110,12 +115,13 @@ describe("ocx link cleanup", () => {
       ]);
       expect(report.links[3].recovery).toEqual([]);
       expect(report.links[4].reason).toContain("Connection refused");
-      // Only Home-initiated records are asked, each with one uname command over the link's own trust.
-      expect(h.calls).toHaveLength(5);
+      // Only Home-initiated records are asked over the link's own trust: one uname each, plus the
+      // %OS% follow-up for the one localized refusal (never for ssh's 255 or a Linux answer).
+      expect(h.calls).toHaveLength(7);
+      expect(h.calls.filter(argv => argv.at(-1) === WINDOWS_OS_PROBE).map(argv => argv[argv.indexOf("--") + 1])).toEqual(["win-de"]);
       for (const argv of h.calls) {
         expect(argv).toContain(`UserKnownHostsFile=${linkKnownHostsPath()}`);
         expect(argv).toContain("StrictHostKeyChecking=yes");
-        expect(argv.at(-1)).toContain("uname -s");
       }
       expect(readFileSync(linkStorePath(), "utf8")).toBe(before);
       expect(h.err).toEqual([]);

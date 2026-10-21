@@ -5,14 +5,14 @@
  * Windows Children are refused at enrollment, but a link enrolled before that refusal existed keeps
  * its record, key and reverse tunnel. Its record carries no platform, so this command asks the
  * Child over the same pinned SSH trust the tunnel uses (`uname -s` through `sh`) and classifies the
- * answer with `classifyRemotePlatform`.
+ * answer with `detectRemotePlatform` (a localized cmd or PowerShell refusal gets the fixed %OS% probe).
  *
  * The recovery order matters. An ordinary `ocx link revoke` runs `ocx disconnect` on the Child
  * through the POSIX ocx prelude, which exits 125 on Windows, so for these Children the revoke must
  * be forced after the Child disconnected itself.
  */
 import { linkKnownHostsPath, linkStorePath } from "../link/paths";
-import { classifyRemotePlatform, REMOTE_UNAME_ARGV, type RemotePlatform } from "../link/remote-platform";
+import { detectRemotePlatform, REMOTE_UNAME_ARGV, type RemotePlatform } from "../link/remote-platform";
 import { buildExecArgv } from "../link/ssh-argv";
 import { createSshRunner, sshFailureHint, sshRunnerErrorHint, type SshRunner } from "../link/ssh-runner";
 import { readLinkStore, type LinkStore } from "../link/store";
@@ -47,7 +47,7 @@ export function windowsChildRecovery(linkId: string, alias: string): string[] {
 async function checkPlatform(runner: SshRunner, alias: string, knownHostsFile: string): Promise<{ platform: RemotePlatform; reason: string | null }> {
   try {
     const result = await runner.run(buildExecArgv({ alias, argv: REMOTE_UNAME_ARGV, knownHostsFile }), { timeoutMs: CHECK_TIMEOUT_MS });
-    const platform = classifyRemotePlatform(result);
+    const platform = await detectRemotePlatform(runner, alias, knownHostsFile, result);
     return { platform, reason: platform === "unknown" ? (sshFailureHint(result.stderr) ?? `ssh exited ${result.code}`) : null };
   } catch (error) {
     return { platform: "unknown", reason: sshRunnerErrorHint(error) ?? "ssh could not run" };

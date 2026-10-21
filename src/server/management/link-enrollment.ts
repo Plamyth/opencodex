@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertSshAlias, buildExecArgv, buildFingerprintArgv, buildProbeArgv, REMOTE_COMMAND_NOT_FOUND, REMOTE_PLATFORM_UNSUPPORTED, remoteOcxArgv } from "../../link/ssh-argv";
 import { parseFingerprintLine } from "../../link/fingerprint";
-import { isWindowsShellRefusal, WINDOWS_CHILD_REFUSAL } from "../../link/remote-platform";
+import { detectRemotePlatform, isWindowsShellRefusal, WINDOWS_CHILD_REFUSAL } from "../../link/remote-platform";
+import type { SshRunner } from "../../link/ssh-runner";
 import { LINK_CATALOG_MAX_BYTES, LINK_RELAY_VERIFY_MS, isChildHealth, linkCommandBudget, linkRestartBudget, parseChildHttp, remoteChildHttpArgv, REMOTE_CURL_PREFLIGHT } from "../../link/remote-probe";
 import { newLinkId, type LinkStore } from "../../link/store";
 import { SshRunnerError, boundHint, sshFailureHint, sshRunnerErrorHint, type SshRunResult } from "../../link/ssh-runner";
@@ -34,6 +35,14 @@ function windowsRefusal(): Response {
   return fail("remote_platform_unsupported", WINDOWS_CHILD_REFUSAL, 409);
 }
 
+/**
+ * Pre-issuance Windows gate for a failed remote command: exit 125, the English cmd/PowerShell
+ * refusal, or (for localized shells) the fixed %OS% probe against the same host key.
+ */
+async function windowsChild(runner: SshRunner, alias: string, knownHostsFile: string, result: SshRunResult): Promise<boolean> {
+  return result.code !== 0 && await detectRemotePlatform(runner, alias, knownHostsFile, result) === "windows";
+}
+
 export async function probe(ctx: ManagementContext, state: LinkRouteState): Promise<Response> {
   const value = await readManagementJsonBodyOr(ctx.req, null);
   const body = exactBody(value, ["alias"]) ?? exactBody(value, ["alias", "includeVersion"]);
@@ -50,7 +59,7 @@ export async function probe(ctx: ManagementContext, state: LinkRouteState): Prom
       const result = await runner.run(buildProbeArgv({ alias, tempKnownHostsFile: path }), { timeoutMs: 30_000 });
       const latency = Math.max(0, now() - started);
       // cmd.exe and PowerShell refuse the POSIX `true` the probe runs; say Windows, not "probe failed".
-      if (result.code !== 0) return isWindowsShellRefusal(result.stderr) ? windowsRefusal() : fail("probe_failed", "SSH host probing failed.", 502, sshFailureHint(result.stderr));
+      if (result.code !== 0) return await windowsChild(runner, alias, path, result) ? windowsRefusal() : fail("probe_failed", "SSH host probing failed.", 502, sshFailureHint(result.stderr));
       const fp = await runner.run(buildFingerprintArgv(path), { timeoutMs: 10_000 });
       if (fp.code !== 0) return fail("fingerprint_failed", "The SSH host fingerprint could not be read.", 502, sshFailureHint(fp.stderr));
       const parsed = parseFingerprintLine(fp.stdout.trim());
@@ -59,6 +68,7 @@ export async function probe(ctx: ManagementContext, state: LinkRouteState): Prom
       let ocxVersion: string | undefined;
       if (body.includeVersion === true) {
         const versionResult = await runner.run(buildExecArgv({ alias, argv: remoteOcxArgv(["--version"]), knownHostsFile: path }), { timeoutMs: 30_000 });
+        if (await windowsChild(runner, alias, path, versionResult)) return windowsRefusal();
         const denied = remoteFailure(versionResult, "version_probe_failed", "The remote ocx version could not be read.");
         if (denied) return denied;
         const parsedVersion = parseVersion(versionResult.stdout);
@@ -90,7 +100,9 @@ export async function confirmHost(ctx: ManagementContext, state: LinkRouteState)
     writeFileSync(path, pending.knownHostLine + "\n", { mode: 0o600 });
     try {
       const started = now();
-      const result = await runnerFor(ctx).run(buildExecArgv({ alias, argv: remoteOcxArgv(["--version"]), knownHostsFile: path }), { timeoutMs: 30_000 });
+      const runner = runnerFor(ctx);
+      const result = await runner.run(buildExecArgv({ alias, argv: remoteOcxArgv(["--version"]), knownHostsFile: path }), { timeoutMs: 30_000 });
+      if (await windowsChild(runner, alias, path, result)) return windowsRefusal();
       const denied = remoteFailure(result, "version_probe_failed", "The remote ocx version could not be confirmed.");
       if (denied) return denied;
       const version = parseVersion(result.stdout);

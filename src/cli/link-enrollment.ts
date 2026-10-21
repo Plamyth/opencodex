@@ -85,7 +85,8 @@ export async function runLinkEnrollment(command: "probe" | "add", args: string[]
     if (error instanceof RuntimeApiError && record(error.body)) {
       const code = record(error.body.error) ? error.body.error.code : undefined;
       // Refused at probe or confirm, before any key or tunnel: point at Hub mode, not at a phase.
-      if (code === "remote_platform_unsupported") throw new Error(windowsChildRefusal(alias));
+      // A residual response comes after key issuance; it keeps its Child recovery below.
+      if (code === "remote_platform_unsupported" && error.body.residual !== true) throw new Error(windowsChildRefusal(alias));
       const phase = typeof code === "string" && Object.hasOwn(PHASES, code) ? PHASES[code] : undefined;
       const message = phase ? "Remote Link failed during " + phase : error.message;
       if (phase || error.body.residual === true) throw new Error(message + (error.body.residual === true ? ". " + RECOVERY : ""));

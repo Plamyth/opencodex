@@ -84,6 +84,16 @@ describe("CLI Remote Link enrollment", () => {
       expect(h.out).toEqual([]);
     } finally { h.restore(); }
   });
+  test("a residual Windows refusal after key issuance keeps the Child recovery", async () => {
+    const h = harness(); try {
+      let i = 0;
+      h.deps.fetchImpl = async () => ++i < 3 ? Response.json(i === 1 ? probe : confirm) : Response.json({ error: { code: "remote_platform_unsupported" }, residual: true }, { status: 409 });
+      expect(await runLinkCommand(["add", "child-a", "--expect-fingerprint", fingerprint], h.deps)).toBe(1);
+      const message = h.err.join("\n");
+      expect(message).toContain("Run ocx disconnect and ocx restart on the Child before retrying.");
+      expect(message).not.toContain("no link key was issued");
+    } finally { h.restore(); }
+  });
   test("residual failures retain fixed Child recovery without remote error text", async () => {
     const h = harness(); try {
       let i = 0;
